@@ -11,6 +11,95 @@ import { ChatDeepSeek } from '@langchain/deepseek';
 
 const maxTokens = 1024 * 4;
 
+/**
+ * Validates that a CLIProxyAPI server has the requested model available.
+ * Queries the /v1/models endpoint and checks if the model is in the response.
+ * If the requested model is not found but other models are available, it returns
+ * the first available model name as a fallback.
+ *
+ * @param baseUrl - The base URL of the CLIProxyAPI server (e.g., https://xxx.trycloudflare.com/v1)
+ * @param modelName - The requested model name (e.g., qwen3-coder-plus)
+ * @returns The validated model name (original or fallback), or throws an error
+ */
+export async function validateCliProxyModel(baseUrl: string, modelName: string): Promise<string> {
+  if (!baseUrl) {
+    throw new Error(
+      'CLIProxyAPI base URL is not configured. Please set the Base URL in the CliProxyAPI provider settings.',
+    );
+  }
+
+  const modelsUrl = `${baseUrl.replace(/\/+$/, '')}/models`;
+
+  try {
+    const response = await fetch(modelsUrl, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10000), // 10s timeout
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `CLIProxyAPI server returned ${response.status}: ${response.statusText}. ` +
+          `Please verify the server is running and the tunnel URL is correct.`,
+      );
+    }
+
+    const data = await response.json();
+    const models = data?.data || [];
+
+    if (models.length === 0) {
+      throw new Error(
+        'CLIProxyAPI server has no models available. This usually means the Qwen auth tokens have expired or failed to authenticate. ' +
+          'Please re-run the Nano.yml workflow with fresh encrypted tokens.',
+      );
+    }
+
+    const modelIds = models.map((m: { id: string }) => m.id);
+
+    // Check if the requested model is available
+    if (modelIds.includes(modelName)) {
+      return modelName;
+    }
+
+    // If not found, try common alternatives
+    const alternatives = ['coder-model', 'qwen3-coder-plus', 'qwen3-coder-flash'];
+    for (const alt of alternatives) {
+      if (alt !== modelName && modelIds.includes(alt)) {
+        console.warn(
+          `[CLIProxyAPI] Requested model "${modelName}" not found. Using available model "${alt}" instead. ` +
+            `Available models: ${modelIds.join(', ')}`,
+        );
+        return alt;
+      }
+    }
+
+    // If no known alternative, use the first available model
+    if (modelIds.length > 0) {
+      console.warn(
+        `[CLIProxyAPI] Requested model "${modelName}" not found. Falling back to first available model "${modelIds[0]}". ` +
+          `Available models: ${modelIds.join(', ')}`,
+      );
+      return modelIds[0];
+    }
+
+    throw new Error(
+      `Model "${modelName}" is not available on the CLIProxyAPI server. ` +
+        `Available models: ${modelIds.join(', ')}. ` +
+        `This usually means the Qwen auth tokens have expired. Please re-run the Nano.yml workflow.`,
+    );
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(
+        `Cannot connect to CLIProxyAPI server at ${modelsUrl}. ` +
+          `Please verify: 1) The Nano.yml workflow is still running, ` +
+          `2) The Cloudflare tunnel URL is correct and accessible, ` +
+          `3) Your internet connection is working.`,
+      );
+    }
+    throw error;
+  }
+}
+
 // Custom ChatLlama class to handle Llama API response format
 class ChatLlama extends ChatOpenAI {
   constructor(args: any) {
@@ -384,7 +473,8 @@ export function createChatModel(providerConfig: ProviderConfig, modelConfig: Mod
     case ProviderTypeEnum.CliProxyAPI: {
       // CliProxyAPI provides an OpenAI-compatible endpoint via CLIProxyAPI + Cloudflare Tunnel
       // No API key needed (uses OAuth tokens on the server side)
-      return createOpenAIChatModel(
+      // IMPORTANT: We disable streaming to avoid SSE parsing issues with the proxy
+      const cliproxyModel = createOpenAIChatModel(
         {
           ...providerConfig,
           // Use a dummy API key if none provided since CLIProxyAPI doesn't require one
@@ -393,6 +483,7 @@ export function createChatModel(providerConfig: ProviderConfig, modelConfig: Mod
         modelConfig,
         undefined,
       );
+      return cliproxyModel;
     }
     default: {
       // by default, we think it's a openai-compatible provider

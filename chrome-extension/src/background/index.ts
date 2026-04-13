@@ -12,7 +12,7 @@ import BrowserContext from './browser/context';
 import { Executor } from './agent/executor';
 import { createLogger } from './log';
 import { ExecutionState } from './agent/event/types';
-import { createChatModel } from './agent/helper';
+import { createChatModel, validateCliProxyModel } from './agent/helper';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { DEFAULT_AGENT_OPTIONS } from './agent/types';
 import { SpeechToTextService } from './services/speechToText';
@@ -274,8 +274,25 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
   if (!navigatorModel) {
     throw new Error(t('bg_setup_noNavigatorModel'));
   }
-  // Log the provider config being used for the navigator
+
+  // For CLIProxyAPI provider, validate model availability before creating the chat model
   const navigatorProviderConfig = providers[navigatorModel.provider];
+  const navigatorProviderType = getProviderTypeByProviderId(navigatorModel.provider);
+
+  if (navigatorProviderType === 'cliproxyapi' && navigatorProviderConfig.baseUrl) {
+    try {
+      const validatedModel = await validateCliProxyModel(navigatorProviderConfig.baseUrl, navigatorModel.modelName);
+      if (validatedModel !== navigatorModel.modelName) {
+        logger.info(`[CLIProxyAPI] Navigator model changed from "${navigatorModel.modelName}" to "${validatedModel}"`);
+        navigatorModel.modelName = validatedModel;
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      throw new Error(`CLIProxyAPI Navigator setup failed: ${errorMsg}`);
+    }
+  }
+
+  // Log the provider config being used for the navigator
   const navigatorLLM = createChatModel(navigatorProviderConfig, navigatorModel);
 
   let plannerLLM: BaseChatModel | null = null;
@@ -283,6 +300,22 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
   if (plannerModel) {
     // Log the provider config being used for the planner
     const plannerProviderConfig = providers[plannerModel.provider];
+    const plannerProviderType = getProviderTypeByProviderId(plannerModel.provider);
+
+    // For CLIProxyAPI provider, validate model availability for planner too
+    if (plannerProviderType === 'cliproxyapi' && plannerProviderConfig.baseUrl) {
+      try {
+        const validatedModel = await validateCliProxyModel(plannerProviderConfig.baseUrl, plannerModel.modelName);
+        if (validatedModel !== plannerModel.modelName) {
+          logger.info(`[CLIProxyAPI] Planner model changed from "${plannerModel.modelName}" to "${validatedModel}"`);
+          plannerModel.modelName = validatedModel;
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        throw new Error(`CLIProxyAPI Planner setup failed: ${errorMsg}`);
+      }
+    }
+
     plannerLLM = createChatModel(plannerProviderConfig, plannerModel);
   }
 

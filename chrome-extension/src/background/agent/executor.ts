@@ -19,6 +19,7 @@ import {
   RequestCancelledError,
   MaxStepsReachedError,
   MaxFailuresReachedError,
+  isCliProxyModelError,
 } from './agents/errors';
 import { URLNotAllowedError } from '../browser/views';
 import { chatHistoryStore } from '@extension/storage/lib/chat';
@@ -243,6 +244,15 @@ export class Executor {
       ) {
         throw error;
       }
+      // Handle CLIProxyAPI "unknown provider" errors as fatal - no point retrying
+      if (isCliProxyModelError(error)) {
+        throw new ChatModelBadRequestError(
+          `CLIProxyAPI model not available: The requested model is not registered on the server. ` +
+            `This usually means the Qwen auth tokens have expired. Please re-run the Nano.yml workflow ` +
+            `with fresh tokens, or check the CLIProxyAPI server logs.`,
+          error,
+        );
+      }
       context.consecutiveFailures++;
       logger.error(`Failed to execute planner: ${error}`);
       if (context.consecutiveFailures >= context.options.maxFailures) {
@@ -284,6 +294,15 @@ export class Executor {
         error instanceof ExtensionConflictError
       ) {
         throw error;
+      }
+      // Handle CLIProxyAPI "unknown provider" errors as fatal - no point retrying
+      if (isCliProxyModelError(error)) {
+        throw new ChatModelBadRequestError(
+          `CLIProxyAPI model not available: The requested model is not registered on the server. ` +
+            `This usually means the Qwen auth tokens have expired. Please re-run the Nano.yml workflow ` +
+            `with fresh tokens, or check the CLIProxyAPI server logs.`,
+          error,
+        );
       }
       context.consecutiveFailures++;
       logger.error(`Failed to execute step: ${error}`);

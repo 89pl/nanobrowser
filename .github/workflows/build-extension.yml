@@ -91,6 +91,12 @@ jobs:
             - Pre-built Chrome extension ready to load
             - `manifest.json` and all required assets
             - No build step needed!
+
+            ### CLIProxyAPI Provider Notes
+            - Added pre-flight model validation that checks `/v1/models` before making requests
+            - Automatic fallback to alternative models (e.g., `coder-model`) if requested model is unavailable
+            - Improved error messages for expired Qwen tokens and unreachable servers
+            - Added `coder-model` (Qwen 3.5 Plus) as an additional model option
           files: |
             nanobrowser-extension.zip
           draft: false

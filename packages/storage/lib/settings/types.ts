@@ -50,7 +50,7 @@ export const llmProviderModelNames = {
     'Llama-4-Maverick-17B-128E-Instruct-FP8',
     'Llama-4-Scout-17B-16E-Instruct-FP8',
   ],
-  [ProviderTypeEnum.CliProxyAPI]: ['qwen3-coder-plus'],
+  [ProviderTypeEnum.CliProxyAPI]: ['qwen3-coder-plus', 'coder-model'],
   // Custom OpenAI providers don't have predefined models as they are user-defined
 };
 

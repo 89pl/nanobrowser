@@ -173,6 +173,24 @@ export function isBadRequestError(error: unknown): boolean {
   );
 }
 
+/**
+ * Checks if an error is a 502 Bad Gateway error from CLIProxyAPI
+ * This typically indicates "unknown provider for model" which means
+ * the model is not registered in the CLIProxyAPI dynamic registry.
+ *
+ * @param error - The error to check
+ * @returns boolean indicating if it's a 502 CLIProxyAPI error
+ */
+export function isCliProxyModelError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message || '';
+  return (
+    (msg.includes('502') && msg.includes('unknown provider')) ||
+    (msg.includes('502') && msg.includes('Bad Gateway')) ||
+    msg.includes('unknown provider for model')
+  );
+}
+
 export function isAbortedError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === 'AbortError' || error.message.includes('Aborted');
