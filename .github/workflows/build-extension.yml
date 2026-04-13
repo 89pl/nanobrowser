@@ -1,0 +1,97 @@
+name: Build & Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub release with the built extension'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.1'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build extension
+        run: pnpm build
+
+      - name: Verify manifest.json exists
+        run: |
+          if [ ! -f dist/manifest.json ]; then
+            echo "::error::manifest.json not found in dist/ after build!"
+            exit 1
+          fi
+          echo "manifest.json found:"
+          cat dist/manifest.json
+
+      - name: Create extension zip
+        run: |
+          cd dist
+          zip -r ../nanobrowser-extension.zip .
+          cd ..
+          echo "Extension zip created: $(ls -lh nanobrowser-extension.zip)"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobrowser-extension
+          path: dist/
+          retention-days: 30
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobrowser-extension-zip
+          path: nanobrowser-extension.zip
+          retention-days: 30
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || format('manual-{0}', github.sha) }}
+          name: "Nanobrowser ${{ github.ref_name || 'Manual Build' }}"
+          body: |
+            ## Installation
+
+            ### Quick Install (Recommended)
+            1. Download `nanobrowser-extension.zip` below
+            2. Unzip the file
+            3. Open `chrome://extensions/` in Chrome
+            4. Enable **Developer mode** (top right)
+            5. Click **Load unpacked**
+            6. Select the unzipped folder
+
+            ### What's inside
+            - Pre-built Chrome extension ready to load
+            - `manifest.json` and all required assets
+            - No build step needed!
+          files: |
+            nanobrowser-extension.zip
+          draft: false
+          prerelease: false

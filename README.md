@@ -108,13 +108,25 @@ To get the most recent version with all the latest features:
 
 If you prefer to build Nanobrowser yourself, follow these steps:
 
+### Quick Start (One Command)
+
+```bash
+git clone https://github.com/89pl/nanobrowser.git
+cd nanobrowser
+bash setup.sh
+```
+
+The `setup.sh` script will check prerequisites, install dependencies, build the extension, and tell you exactly what to do next.
+
+### Manual Build Steps
+
 1. **Prerequisites**:
    * [Node.js](https://nodejs.org/) (v22.12.0 or higher)
    * [pnpm](https://pnpm.io/installation) (v9.15.1 or higher)
 
 2. **Clone the Repository**:
    ```bash
-   git clone https://github.com/nanobrowser/nanobrowser.git
+   git clone https://github.com/89pl/nanobrowser.git
    cd nanobrowser
    ```
 
@@ -129,13 +141,50 @@ If you prefer to build Nanobrowser yourself, follow these steps:
    ```
 
 5. **Load the Extension**:
-   * The built extension will be in the `dist` directory
-   * Follow the installation steps from the Manually Install section to load the extension into your browser
+   > **IMPORTANT: You must load the `dist/` folder, NOT the repository root folder!**
+
+   * Open `chrome://extensions/` in Chrome
+   * Enable `Developer mode` (top right toggle)
+   * Click `Load unpacked` (top left)
+   * Navigate to and select the **`dist`** folder inside the cloned repository
 
 6. **Development Mode** (optional):
    ```bash
    pnpm dev
    ```
+
+### Pre-built Extension (No Build Required)
+
+This repository includes a pre-built `dist/` folder. If you just want to try the extension without building:
+
+1. Clone or download this repository
+2. Open `chrome://extensions/` in Chrome
+3. Enable `Developer mode`
+4. Click `Load unpacked`
+5. Select the **`dist`** folder inside the repository
+
+## Troubleshooting
+
+### "Manifest file is missing or unreadable"
+
+This error means you selected the **wrong folder** when loading the extension. Chrome extensions require a `manifest.json` file in the root of the selected folder.
+
+**Fix:** Make sure you select the **`dist/`** folder (which contains `manifest.json`), **NOT** the repository root folder or the `chrome-extension/` folder.
+
+```
+nanobrowser/          <-- DO NOT select this folder
+  chrome-extension/   <-- DO NOT select this folder either
+  dist/               <-- SELECT THIS FOLDER
+    manifest.json     <-- Chrome needs this file
+    background.iife.js
+    ...
+```
+
+If the `dist/` folder is empty or missing, you need to build first:
+```bash
+bash setup.sh
+# or manually: pnpm install && pnpm build
+```
 
 ## 🤖 Choosing Your Models
 

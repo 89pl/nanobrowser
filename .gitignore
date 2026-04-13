@@ -4,8 +4,11 @@
 # testing
 **/coverage
 
-# build
-**/dist
+# build (workspace-level dist folders are ignored, but the root dist/ is kept
+# so the pre-built extension is available immediately after cloning)
+packages/**/dist
+pages/**/dist
+chrome-extension/**/dist
 **/build
 **/dist-zip
 
