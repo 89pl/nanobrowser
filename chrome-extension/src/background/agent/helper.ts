@@ -381,6 +381,19 @@ export function createChatModel(providerConfig: ProviderConfig, modelConfig: Mod
 
       return new ChatLlama(args);
     }
+    case ProviderTypeEnum.CliProxyAPI: {
+      // CliProxyAPI provides an OpenAI-compatible endpoint via CLIProxyAPI + Cloudflare Tunnel
+      // No API key needed (uses OAuth tokens on the server side)
+      return createOpenAIChatModel(
+        {
+          ...providerConfig,
+          // Use a dummy API key if none provided since CLIProxyAPI doesn't require one
+          apiKey: providerConfig.apiKey || 'cliproxyapi-nanobrowser',
+        },
+        modelConfig,
+        undefined,
+      );
+    }
     default: {
       // by default, we think it's a openai-compatible provider
       // Pass undefined for extraFetchOptions for default/custom cases

@@ -412,6 +412,9 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
     } else if (providerType === ProviderTypeEnum.Llama) {
       // Llama needs API Key and Base URL
       hasInput = Boolean(config?.apiKey?.trim()) && Boolean(config?.baseUrl?.trim());
+    } else if (providerType === ProviderTypeEnum.CliProxyAPI) {
+      // CliProxyAPI only needs Base URL (the Cloudflare Tunnel URL), no API key required
+      hasInput = Boolean(config?.baseUrl?.trim());
     } else {
       // Other built-in providers just need API Key
       hasInput = Boolean(config?.apiKey?.trim());
@@ -436,14 +439,15 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
         return;
       }
 
-      // Check if base URL is required but missing for custom_openai, ollama, azure_openai or openrouter
+      // Check if base URL is required but missing for custom_openai, ollama, azure_openai, openrouter, or cliproxyapi
       // Note: Groq and Cerebras do not require base URL as they use the default endpoint
       if (
         (providers[provider].type === ProviderTypeEnum.CustomOpenAI ||
           providers[provider].type === ProviderTypeEnum.Ollama ||
           providers[provider].type === ProviderTypeEnum.AzureOpenAI ||
           providers[provider].type === ProviderTypeEnum.OpenRouter ||
-          providers[provider].type === ProviderTypeEnum.Llama) &&
+          providers[provider].type === ProviderTypeEnum.Llama ||
+          providers[provider].type === ProviderTypeEnum.CliProxyAPI) &&
         (!providers[provider].baseUrl || !providers[provider].baseUrl.trim())
       ) {
         alert(t('options_models_providers_errors_baseUrlRequired', getDefaultDisplayNameFromProviderId(provider)));
@@ -1231,7 +1235,8 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                         {t('options_models_providers_apiKey')}
                         {/* Show asterisk only if required */}
                         {providerConfig.type !== ProviderTypeEnum.CustomOpenAI &&
-                        providerConfig.type !== ProviderTypeEnum.Ollama
+                        providerConfig.type !== ProviderTypeEnum.Ollama &&
+                        providerConfig.type !== ProviderTypeEnum.CliProxyAPI
                           ? '*'
                           : ''}
                       </label>
@@ -1240,7 +1245,8 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                           id={`${providerId}-api-key`}
                           type="password"
                           placeholder={
-                            providerConfig.type === ProviderTypeEnum.CustomOpenAI
+                            providerConfig.type === ProviderTypeEnum.CustomOpenAI ||
+                            providerConfig.type === ProviderTypeEnum.CliProxyAPI
                               ? t('options_models_providers_apiKey_placeholder_optional')
                               : providerConfig.type === ProviderTypeEnum.Ollama
                                 ? t('options_models_providers_apiKey_placeholder_ollama')
@@ -1309,12 +1315,13 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                         </div>
                       )}
 
-                    {/* Base URL input (for custom_openai, ollama, azure_openai, openrouter, and llama) */}
+                    {/* Base URL input (for custom_openai, ollama, azure_openai, openrouter, llama, and cliproxyapi) */}
                     {(providerConfig.type === ProviderTypeEnum.CustomOpenAI ||
                       providerConfig.type === ProviderTypeEnum.Ollama ||
                       providerConfig.type === ProviderTypeEnum.AzureOpenAI ||
                       providerConfig.type === ProviderTypeEnum.OpenRouter ||
-                      providerConfig.type === ProviderTypeEnum.Llama) && (
+                      providerConfig.type === ProviderTypeEnum.Llama ||
+                      providerConfig.type === ProviderTypeEnum.CliProxyAPI) && (
                       <div className="flex flex-col">
                         <div className="flex items-center">
                           <label
@@ -1327,7 +1334,8 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                             {/* Show asterisk only if required */}
                             {/* OpenRouter has a default, so not strictly required, but needed for save button */}
                             {providerConfig.type === ProviderTypeEnum.CustomOpenAI ||
-                            providerConfig.type === ProviderTypeEnum.AzureOpenAI
+                            providerConfig.type === ProviderTypeEnum.AzureOpenAI ||
+                            providerConfig.type === ProviderTypeEnum.CliProxyAPI
                               ? '*'
                               : ''}
                           </label>
@@ -1343,7 +1351,9 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
                                     ? t('options_models_providers_placeholders_baseUrl_openrouter')
                                     : providerConfig.type === ProviderTypeEnum.Llama
                                       ? t('options_models_providers_placeholders_baseUrl_llama')
-                                      : t('options_models_providers_placeholders_baseUrl_ollama')
+                                      : providerConfig.type === ProviderTypeEnum.CliProxyAPI
+                                        ? 'https://your-tunnel-url.trycloudflare.com/v1'
+                                        : t('options_models_providers_placeholders_baseUrl_ollama')
                             }
                             value={providerConfig.baseUrl || ''}
                             onChange={e => handleApiKeyChange(providerId, providerConfig.apiKey || '', e.target.value)}

@@ -1,0 +1,418 @@
+name: NanoBrowser - CLIProxyAPI Provider
+
+on:
+  workflow_dispatch:
+    inputs:
+      encrypted_secret:
+        description: 'Encrypted one-line secret (base64-encoded, from Qwen.yml)'
+        required: true
+        type: string
+      decryption_password:
+        description: 'Password to decrypt the secret'
+        required: true
+        type: string
+
+env:
+  CLIPROXY_PORT: '8317'
+
+jobs:
+  run-cliproxyapi:
+    name: CLIProxyAPI Round-Robin Provider
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Decrypt Qwen Tokens
+        id: decrypt
+        run: |
+          set -euo pipefail
+          echo "::group::Decrypting Qwen tokens"
+
+          ENCRYPTED_INPUT="${{ github.event.inputs.encrypted_secret }}"
+          DECRYPTION_PASS="${{ github.event.inputs.decryption_password }}"
+
+          if [ -z "$ENCRYPTED_INPUT" ]; then
+            echo "::error::Encrypted secret input is empty!"
+            exit 1
+          fi
+          if [ -z "$DECRYPTION_PASS" ]; then
+            echo "::error::Decryption password is empty!"
+            exit 1
+          fi
+
+          # Create auth directory
+          AUTH_DIR="$HOME/.cli-proxy-api"
+          mkdir -p "$AUTH_DIR"
+          chmod 700 "$AUTH_DIR"
+          echo "AUTH_DIR=$AUTH_DIR" >> "$GITHUB_ENV"
+          cd "$AUTH_DIR"
+
+          # Decode the base64-encoded encrypted blob
+          # This is the EXACT reverse of Qwen.yml's encryption:
+          #   openssl enc -aes-256-cbc -salt -pbkdf2 -in qwen-tokens.tar.gz -out qwen-tokens.enc -pass pass:'PASSWORD'
+          #   base64 -w 0 qwen-tokens.enc
+          echo "$ENCRYPTED_INPUT" | base64 -d > qwen-tokens.enc
+
+          # Decrypt using the EXACT same method as Security-scan.yml from Strixer:
+          #   echo "PASSWORD" | openssl enc -aes-256-cbc -d -salt -pbkdf2 -in qwen-tokens.enc -out qwen-tokens.tar.gz -pass stdin
+          if ! echo "$DECRYPTION_PASS" | openssl enc -aes-256-cbc -d -salt -pbkdf2 \
+            -in qwen-tokens.enc \
+            -out qwen-tokens.tar.gz \
+            -pass stdin 2>/dev/null; then
+            echo "::error::Failed to decrypt tokens. Invalid password or corrupted secret."
+            exit 1
+          fi
+
+          # Extract token files from tarball
+          tar -xzf qwen-tokens.tar.gz
+
+          # Handle nested account-* directories (same as Security-scan.yml)
+          for dir in account-*/; do
+            [ -d "$dir" ] && mv "$dir"qwen-*.json . 2>/dev/null || true
+          done
+
+          TOKEN_COUNT=$(find . -maxdepth 1 -name 'qwen-*.json' | wc -l)
+          if [ "$TOKEN_COUNT" -eq 0 ]; then
+            echo "::error::No token files found after decryption!"
+            exit 1
+          fi
+
+          echo "✅ Successfully decrypted $TOKEN_COUNT Qwen account(s)"
+          echo "token_count=$TOKEN_COUNT" >> "$GITHUB_OUTPUT"
+
+          # Cleanup encrypted/compressed files
+          rm -f qwen-tokens.enc qwen-tokens.tar.gz
+
+          echo "::endgroup::"
+
+      - name: Install CLIProxyAPI from source
+        run: |
+          set -euo pipefail
+          echo "::group::Installing CLIProxyAPI"
+
+          git clone --depth 1 https://github.com/89pl/CLIProxyAPI.git /tmp/CLIProxyAPI
+          cd /tmp/CLIProxyAPI
+          go build -o cli-proxy-api ./cmd/server
+          sudo mv cli-proxy-api /usr/local/bin/cliproxyapi
+          cd /
+          rm -rf /tmp/CLIProxyAPI
+
+          # Verify installation
+          cliproxyapi --help || true
+          echo "✅ CLIProxyAPI installed successfully"
+
+          echo "::endgroup::"
+
+      - name: Configure CLIProxyAPI
+        run: |
+          set -euo pipefail
+          echo "::group::Configuring CLIProxyAPI"
+
+          cat > "$AUTH_DIR/config.yaml" << 'EOF'
+          host: "127.0.0.1"
+          port: 8317
+          auth-dir: "~/.cli-proxy-api"
+          debug: true
+          logging-to-file: true
+          request-retry: 5
+          max-retry-interval: 60
+          quota-exceeded:
+            switch-project: true
+            switch-preview-model: true
+          routing:
+            strategy: "round-robin"
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' "$AUTH_DIR/config.yaml"
+
+          echo "Configuration created:"
+          cat "$AUTH_DIR/config.yaml"
+          echo ""
+          echo "Token files in auth dir:"
+          ls -la "$AUTH_DIR"/qwen-*.json 2>/dev/null || echo "No token files found"
+
+          echo "::endgroup::"
+
+      - name: Start CLIProxyAPI Server
+        id: cliproxy
+        run: |
+          set -euo pipefail
+          echo "::group::Starting CLIProxyAPI Server"
+
+          cd "$AUTH_DIR"
+
+          echo "Token files found:"
+          ls -la qwen-*.json 2>/dev/null || echo "No qwen token files found!"
+
+          nohup cliproxyapi -config config.yaml > cliproxy.log 2>&1 &
+          SERVER_PID=$!
+          echo "$SERVER_PID" > cliproxy.pid
+          sleep 15
+
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "::error::CLIProxyAPI failed to start"
+            cat cliproxy.log || echo "No log file"
+            exit 1
+          fi
+
+          # Wait for server to be ready
+          for i in {1..30}; do
+            MODELS_RESPONSE=$(curl -s "http://127.0.0.1:${{ env.CLIPROXY_PORT }}/v1/models" 2>/dev/null || true)
+            if [ -n "$MODELS_RESPONSE" ] && echo "$MODELS_RESPONSE" | jq -e '.data' > /dev/null 2>&1; then
+              echo "✅ CLIProxyAPI is ready!"
+              echo "Available models:"
+              echo "$MODELS_RESPONSE" | jq -r '.data[].id' 2>/dev/null | head -20 || true
+              break
+            fi
+            echo "Waiting for CLIProxyAPI... (attempt $i/30)"
+            sleep 3
+          done
+
+          # Show startup logs
+          echo ""
+          echo "CLIProxyAPI startup logs:"
+          head -50 cliproxy.log || true
+
+          ENDPOINT="http://127.0.0.1:${{ env.CLIPROXY_PORT }}/v1"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+          echo "pid=$SERVER_PID" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "=========================================="
+          echo "CLIPROXYAPI READY"
+          echo "Endpoint: $ENDPOINT"
+          echo "Accounts: ${{ steps.decrypt.outputs.token_count }}"
+          echo "Model: qwen3-coder-plus"
+          echo "=========================================="
+
+          echo "::endgroup::"
+
+      - name: Validate API Endpoint
+        run: |
+          set -euo pipefail
+          echo "::group::Validating CLIProxyAPI endpoint"
+
+          ENDPOINT="${{ steps.cliproxy.outputs.endpoint }}"
+
+          # Test models endpoint
+          echo "Testing /v1/models..."
+          MODEL_COUNT=$(curl -s "$ENDPOINT/models" | jq '.data | length' 2>/dev/null || echo "0")
+          echo "Available models: $MODEL_COUNT"
+
+          # Test a simple chat completion
+          echo ""
+          echo "Testing chat completion with qwen3-coder-plus..."
+          RESPONSE=$(curl -s -X POST "$ENDPOINT/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "qwen3-coder-plus",
+              "messages": [{"role": "user", "content": "Say OK"}],
+              "max_tokens": 10
+            }' 2>/dev/null || echo '{"error": "connection failed"}')
+
+          echo "API Response: $RESPONSE"
+
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // .error' 2>/dev/null || echo "unknown error")
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  ⚠️  API validation warning: $ERROR_MSG"
+            echo "║  The server is running but tokens may need refresh.          ║"
+            echo "║  Continuing anyway - the tunnel URL will be provided.        ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+          elif echo "$RESPONSE" | jq -e '.choices[0].message.content' > /dev/null 2>&1; then
+            AI_RESPONSE=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════╗"
+            echo "║  ✅ QWEN TOKEN VALIDATED SUCCESSFULLY                        ║"
+            echo "║  AI Response: $AI_RESPONSE"
+            echo "║  Model: qwen3-coder-plus                                     ║"
+            echo "║  Accounts: ${{ steps.decrypt.outputs.token_count }}                                            ║"
+            echo "╚══════════════════════════════════════════════════════════════╝"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Install and Start Cloudflare Tunnel
+        id: tunnel
+        run: |
+          set -euo pipefail
+          echo "::group::Starting Cloudflare Tunnel"
+
+          # Install cloudflared
+          curl -sSfL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+
+          # Start tunnel pointing to CLIProxyAPI
+          nohup cloudflared tunnel --url http://127.0.0.1:${{ env.CLIPROXY_PORT }} > /tmp/tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "$TUNNEL_PID" > /tmp/tunnel.pid
+          sleep 10
+
+          # Extract the tunnel URL
+          TUNNEL_URL=""
+          for i in {1..30}; do
+            TUNNEL_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "::error::Could not establish Cloudflare Tunnel"
+            cat /tmp/tunnel.log || true
+            exit 1
+          fi
+
+          echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════════╗"
+          echo "║                                                                      ║"
+          echo "║  🌐 CLOUDFLARE TUNNEL URL (use this in NanoBrowser CliProxyAPI)       ║"
+          echo "║                                                                      ║"
+          echo "║  Base URL: ${TUNNEL_URL}/v1                                           ║"
+          echo "║  Model:    qwen3-coder-plus                                           ║"
+          echo "║                                                                      ║"
+          echo "║  Copy the Base URL above and paste it into the NanoBrowser            ║"
+          echo "║  extension under CliProxyAPI provider settings.                       ║"
+          echo "║                                                                      ║"
+          echo "╚══════════════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "::notice title=CLIProxyAPI Tunnel URL::${TUNNEL_URL}/v1"
+
+          echo "::endgroup::"
+
+      - name: Keep Alive - Waiting for manual cancellation
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════════╗"
+          echo "║                                                                      ║"
+          echo "║  🟢 CLIProxyAPI IS RUNNING                                            ║"
+          echo "║                                                                      ║"
+          echo "║  Tunnel URL: ${{ steps.tunnel.outputs.tunnel_url }}/v1                ║"
+          echo "║  Model:      qwen3-coder-plus                                         ║"
+          echo "║  Accounts:   ${{ steps.decrypt.outputs.token_count }}                  ║"
+          echo "║                                                                      ║"
+          echo "║  This workflow will keep running until YOU manually cancel it.         ║"
+          echo "║  Go to Actions > This run > Cancel workflow to stop.                  ║"
+          echo "║                                                                      ║"
+          echo "║  The server will stay alive for up to 6 hours (GitHub Actions limit). ║"
+          echo "║                                                                      ║"
+          echo "╚══════════════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          # Keep the workflow alive by sleeping in a loop
+          # This runs until the user manually cancels or the 6-hour GitHub Actions limit
+          SECONDS_ELAPSED=0
+          HEALTH_CHECK_INTERVAL=300  # Check health every 5 minutes
+
+          while true; do
+            sleep 60
+            SECONDS_ELAPSED=$((SECONDS_ELAPSED + 60))
+            MINUTES=$((SECONDS_ELAPSED / 60))
+            HOURS=$((MINUTES / 60))
+            REMAINING_MINS=$(( (360 * 60 - SECONDS_ELAPSED) / 60 ))
+
+            # Periodic health check
+            if [ $((SECONDS_ELAPSED % HEALTH_CHECK_INTERVAL)) -eq 0 ]; then
+              CLIPROXY_PID=$(cat "$HOME/.cli-proxy-api/cliproxy.pid" 2>/dev/null || echo "")
+              TUNNEL_PID=$(cat /tmp/tunnel.pid 2>/dev/null || echo "")
+
+              CLIPROXY_STATUS="❌ DOWN"
+              if [ -n "$CLIPROXY_PID" ] && kill -0 "$CLIPROXY_PID" 2>/dev/null; then
+                CLIPROXY_STATUS="✅ RUNNING"
+              fi
+
+              TUNNEL_STATUS="❌ DOWN"
+              if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                TUNNEL_STATUS="✅ RUNNING"
+              fi
+
+              # Quick API health check
+              API_STATUS="❌ NO RESPONSE"
+              if curl -s --max-time 10 "http://127.0.0.1:${{ env.CLIPROXY_PORT }}/v1/models" > /dev/null 2>&1; then
+                API_STATUS="✅ RESPONDING"
+              fi
+
+              echo "[${HOURS}h ${MINUTES}m] Health Check | CLIProxyAPI: $CLIPROXY_STATUS | Tunnel: $TUNNEL_STATUS | API: $API_STATUS | Remaining: ~${REMAINING_MINS}min"
+
+              # If CLIProxyAPI crashed, try to restart it
+              if [ "$CLIPROXY_STATUS" = "❌ DOWN" ]; then
+                echo "⚠️ CLIProxyAPI crashed! Attempting restart..."
+                cd "$HOME/.cli-proxy-api"
+                nohup cliproxyapi -config config.yaml > cliproxy.log 2>&1 &
+                NEW_PID=$!
+                echo "$NEW_PID" > cliproxy.pid
+                sleep 10
+                if kill -0 $NEW_PID 2>/dev/null; then
+                  echo "✅ CLIProxyAPI restarted successfully (PID: $NEW_PID)"
+                else
+                  echo "❌ CLIProxyAPI restart failed"
+                fi
+              fi
+
+              # If tunnel crashed, try to restart it
+              if [ "$TUNNEL_STATUS" = "❌ DOWN" ]; then
+                echo "⚠️ Cloudflare Tunnel crashed! Attempting restart..."
+                nohup cloudflared tunnel --url http://127.0.0.1:${{ env.CLIPROXY_PORT }} > /tmp/tunnel.log 2>&1 &
+                NEW_TUNNEL_PID=$!
+                echo "$NEW_TUNNEL_PID" > /tmp/tunnel.pid
+                sleep 10
+                NEW_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log | head -1 || true)
+                if [ -n "$NEW_URL" ]; then
+                  echo "✅ Tunnel restarted: ${NEW_URL}/v1"
+                  echo "::notice title=New Tunnel URL::${NEW_URL}/v1"
+                else
+                  echo "❌ Tunnel restart failed"
+                fi
+              fi
+            else
+              echo "[${HOURS}h ${MINUTES}m] Running... | Remaining: ~${REMAINING_MINS}min"
+            fi
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "::group::Cleanup"
+
+          # Stop CLIProxyAPI
+          if [ -f "$HOME/.cli-proxy-api/cliproxy.pid" ]; then
+            PID=$(cat "$HOME/.cli-proxy-api/cliproxy.pid")
+            kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
+            echo "CLIProxyAPI stopped (PID: $PID)"
+          fi
+
+          # Stop tunnel
+          if [ -f /tmp/tunnel.pid ]; then
+            PID=$(cat /tmp/tunnel.pid)
+            kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
+            echo "Tunnel stopped (PID: $PID)"
+          fi
+
+          # Show final CLIProxyAPI logs
+          if [ -f "$HOME/.cli-proxy-api/cliproxy.log" ]; then
+            echo ""
+            echo "Final CLIProxyAPI logs (last 30 lines):"
+            tail -30 "$HOME/.cli-proxy-api/cliproxy.log" || true
+          fi
+
+          # Clean sensitive files
+          rm -rf "$HOME/.cli-proxy-api"/qwen-*.json 2>/dev/null || true
+          rm -f "$HOME/.cli-proxy-api/cliproxy.pid" 2>/dev/null || true
+          rm -f /tmp/tunnel.pid /tmp/tunnel.log 2>/dev/null || true
+
+          echo "✅ Cleanup complete"
+          echo "::endgroup::"
