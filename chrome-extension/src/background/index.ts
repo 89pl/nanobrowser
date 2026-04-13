@@ -5,6 +5,7 @@ import {
   firewallStore,
   generalSettingsStore,
   llmProviderStore,
+  getProviderTypeByProviderId,
 } from '@extension/storage';
 import { t } from '@extension/i18n';
 import BrowserContext from './browser/context';
@@ -307,6 +308,10 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
 
   const executor = new Executor(task, taskId, browserContext, navigatorLLM, {
     plannerLLM: plannerLLM ?? navigatorLLM,
+    navigatorProvider: getProviderTypeByProviderId(navigatorModel.provider),
+    plannerProvider: plannerModel
+      ? getProviderTypeByProviderId(plannerModel.provider)
+      : getProviderTypeByProviderId(navigatorModel.provider),
     agentOptions: {
       maxSteps: generalSettings.maxSteps,
       maxFailures: generalSettings.maxFailures,

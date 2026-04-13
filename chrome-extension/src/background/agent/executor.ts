@@ -32,6 +32,8 @@ export interface ExecutorExtraArgs {
   extractorLLM?: BaseChatModel;
   agentOptions?: Partial<AgentOptions>;
   generalSettings?: GeneralSettingsConfig;
+  navigatorProvider?: string;
+  plannerProvider?: string;
 }
 
 export class Executor {
@@ -75,12 +77,14 @@ export class Executor {
       chatLLM: navigatorLLM,
       context: context,
       prompt: this.navigatorPrompt,
+      provider: extraArgs?.navigatorProvider,
     });
 
     this.planner = new PlannerAgent({
       chatLLM: plannerLLM,
       context: context,
       prompt: this.plannerPrompt,
+      provider: extraArgs?.plannerProvider,
     });
 
     this.context = context;
@@ -176,21 +180,17 @@ export class Executor {
         // Emit final answer if available, otherwise use task ID
         const finalMessage = this.context.finalAnswer || this.context.taskId;
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_OK, finalMessage);
-
       } else if (step >= allowedMaxSteps) {
         logger.error('❌ Task failed: Max steps reached');
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_errors_maxStepsReached'));
-
       } else if (this.context.stopped) {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
-
       } else {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_PAUSE, t('exec_task_pause'));
       }
     } catch (error) {
       if (error instanceof RequestCancelledError) {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
-
       } else {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_task_fail', [errorMessage]));

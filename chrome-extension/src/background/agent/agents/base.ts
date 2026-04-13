@@ -115,6 +115,13 @@ export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
       return false;
     }
 
+    // CliProxyAPI (Qwen models via CLIProxyAPI proxy) doesn't support json_schema response format
+    // The proxy translates OpenAI-compatible requests to Qwen API, which returns 502 for structured output
+    if (this.provider === ProviderTypeEnum.CliProxyAPI) {
+      logger.debug(`[${this.modelName}] CliProxyAPI doesn't support structured output, using manual JSON extraction`);
+      return false;
+    }
+
     return true;
   }
 
